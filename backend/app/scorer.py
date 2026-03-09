@@ -26,41 +26,33 @@ YAHOO_NEWS_SEARCH = "https://news.yahoo.com/rss/search?p={query}"
 # ─────────────────────────────────────────────
 
 def fetch_price_data(tickers: list[str]) -> dict:
-    """
-    Returns averaged metrics across tickers in the sector.
-    - current_price, price_52w_high, price_52w_low
-    - pe_ratio, pct_from_52w_high
-    - price_trend: list of last 12 monthly close prices (normalized 0-100)
-    """
     pe_ratios, pct_froms, trends = [], [], []
 
     for ticker in tickers:
         try:
             t = yf.Ticker(ticker)
-            info = t.info
-
-            high52 = info.get("fiftyTwoWeekHigh") or info.get("52WeekHigh")
-            low52 = info.get("fiftyTwoWeekLow") or info.get("52WeekLow")
-            current = info.get("currentPrice") or info.get("regularMarketPrice")
-            pe = info.get("trailingPE") or info.get("forwardPE")
-
-            if high52 and current:
-                pct_from = round(((current - high52) / high52) * 100, 1)
-                pct_froms.append(pct_from)
-
-            if pe and 0 < pe < 200:
-                pe_ratios.append(pe)
-
-            # 12 months of monthly closes for sparkline
+            
+            # Use history for price trend (more reliable than info)
             hist = t.history(period="1y", interval="1mo")
             if not hist.empty:
-                closes = hist["Close"].tolist()[-12:]
-                trends.append(closes)
+                closes = hist["Close"].dropna().tolist()[-12:]
+                if len(closes) >= 2:
+                    trends.append(closes)
+                    # Calculate pct from 52w high from history
+                    high52 = max(closes)
+                    current = closes[-1]
+                    pct_from = round(((current - high52) / high52) * 100, 1)
+                    pct_froms.append(pct_from)
+
+            # Try info for PE
+            info = t.info
+            pe = info.get("trailingPE") or info.get("forwardPE")
+            if pe and 0 < pe < 200:
+                pe_ratios.append(pe)
 
         except Exception as e:
             logger.warning(f"yfinance error for {ticker}: {e}")
 
-    # Normalize sparkline to 0-100 for display
     def normalize_trend(series):
         mn, mx = min(series), max(series)
         if mx == mn:
