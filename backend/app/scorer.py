@@ -28,27 +28,34 @@ YAHOO_NEWS_SEARCH = "https://news.yahoo.com/rss/search?p={query}"
 def fetch_price_data(tickers: list[str]) -> dict:
     pe_ratios, pct_froms, trends = [], [], []
 
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
     for ticker in tickers:
         try:
-            t = yf.Ticker(ticker)
-            
-            # Use history for price trend (more reliable than info)
-            hist = t.history(period="1y", interval="1mo")
-            if not hist.empty:
-                closes = hist["Close"].dropna().tolist()[-12:]
+            # Use yfinance with a session and longer timeout
+            import requests
+            session = requests.Session()
+            session.headers.update(headers)
+
+            t = yf.Ticker(ticker, session=session)
+            hist = t.history(period="1y", interval="1mo", timeout=15)
+
+            if not hist.empty and len(hist) >= 3:
+                closes = hist["Close"].dropna().tolist()
                 if len(closes) >= 2:
-                    trends.append(closes)
-                    # Calculate pct from 52w high from history
+                    trends.append(closes[-12:])
                     high52 = max(closes)
                     current = closes[-1]
                     pct_from = round(((current - high52) / high52) * 100, 1)
                     pct_froms.append(pct_from)
 
-            # Try info for PE
-            info = t.info
-            pe = info.get("trailingPE") or info.get("forwardPE")
-            if pe and 0 < pe < 200:
-                pe_ratios.append(pe)
+                    # Estimate PE from price (fallback)
+                    info = t.fast_info
+                    pe = getattr(info, 'p_e_ratio', None)
+                    if pe and 0 < float(pe) < 200:
+                        pe_ratios.append(float(pe))
 
         except Exception as e:
             logger.warning(f"yfinance error for {ticker}: {e}")
@@ -71,7 +78,6 @@ def fetch_price_data(tickers: list[str]) -> dict:
         "pct_from_52w_high": round(float(np.mean(pct_froms)), 1) if pct_froms else None,
         "price_trend": avg_trend or [50] * 12,
     }
-
 
 # ─────────────────────────────────────────────
 # 2. NEWS SENTIMENT  (Yahoo RSS + VADER)
