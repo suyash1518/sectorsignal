@@ -24,56 +24,92 @@ YAHOO_NEWS_SEARCH = "https://news.yahoo.com/rss/search?p={query}"
 # ─────────────────────────────────────────────
 # 1. PRICE / VALUATION DATA  (yfinance)
 # ─────────────────────────────────────────────
-
 def fetch_price_data(tickers: list[str]) -> dict:
-    import os, requests
+    import requests, os
+    from datetime import datetime, timedelta
 
-    api_key = os.getenv("ALPHA_VANTAGE_KEY", "demo")
     pe_ratios, pct_froms, trends = [], [], []
 
-    for ticker in tickers[:2]:  # limit to 2 to stay within free tier
+    # Detect market: NSE (.NS), TSE (.T), or US
+    is_nse = any(t.endswith(".NS") for t in tickers)
+    is_tse = any(t.endswith(".T") for t in tickers)
+    is_us  = not is_nse and not is_tse
+
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+    for ticker in tickers[:2]:
         try:
-            # Monthly adjusted prices
-            url = (
-                f"https://www.alphavantage.co/query"
-                f"?function=TIME_SERIES_MONTHLY_ADJUSTED"
-                f"&symbol={ticker}&apikey={api_key}"
-            )
-            r = requests.get(url, timeout=15)
-            data = r.json()
+            if is_nse:
+                # NSE India public API — no key needed
+                symbol = ticker.replace(".NS", "")
+                end = datetime.now()
+                start = end - timedelta(days=365)
+                url = (
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+                    f"?interval=1mo&range=1y"
+                )
+                r = requests.get(url, headers=headers, timeout=15)
+                data = r.json()
+                closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+                closes = [c for c in closes if c is not None]
 
-            monthly = data.get("Monthly Adjusted Time Series", {})
-            if not monthly:
-                continue
+                if len(closes) >= 2:
+                    trends.append(closes[-12:])
+                    high52 = max(closes)
+                    current = closes[-1]
+                    pct_froms.append(round(((current - high52) / high52) * 100, 1))
 
-            # Get last 12 months sorted oldest → newest
-            sorted_dates = sorted(monthly.keys())[-12:]
-            closes = [float(monthly[d]["5. adjusted close"]) for d in sorted_dates]
+                    # PE from Yahoo chart meta
+                    meta = data["chart"]["result"][0].get("meta", {})
+                    pe = None  # not in chart API, skip
+                    
+            elif is_us:
+                # Alpha Vantage for US tickers
+                api_key = os.getenv("ALPHA_VANTAGE_KEY", "demo")
+                url = (
+                    f"https://www.alphavantage.co/query"
+                    f"?function=TIME_SERIES_MONTHLY_ADJUSTED"
+                    f"&symbol={ticker}&apikey={api_key}"
+                )
+                r = requests.get(url, timeout=15)
+                data = r.json()
+                monthly = data.get("Monthly Adjusted Time Series", {})
+                if monthly:
+                    sorted_dates = sorted(monthly.keys())[-12:]
+                    closes = [float(monthly[d]["5. adjusted close"]) for d in sorted_dates]
+                    if len(closes) >= 2:
+                        trends.append(closes)
+                        high52 = max(closes)
+                        current = closes[-1]
+                        pct_froms.append(round(((current - high52) / high52) * 100, 1))
 
-            if len(closes) >= 2:
-                trends.append(closes)
-                high52 = max(closes)
-                current = closes[-1]
-                pct_from = round(((current - high52) / high52) * 100, 1)
-                pct_froms.append(pct_from)
+                    # PE from Alpha Vantage overview
+                    ov_url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={api_key}"
+                    ov = requests.get(ov_url, timeout=15).json()
+                    pe = ov.get("TrailingPE")
+                    if pe:
+                        try:
+                            pe_f = float(pe)
+                            if 0 < pe_f < 200:
+                                pe_ratios.append(pe_f)
+                        except:
+                            pass
 
-            # Overview for PE ratio
-            overview_url = (
-                f"https://www.alphavantage.co/query"
-                f"?function=OVERVIEW&symbol={ticker}&apikey={api_key}"
-            )
-            ov = requests.get(overview_url, timeout=15).json()
-            pe = ov.get("TrailingPE") or ov.get("ForwardPE")
-            if pe:
-                try:
-                    pe_f = float(pe)
-                    if 0 < pe_f < 200:
-                        pe_ratios.append(pe_f)
-                except:
-                    pass
+            else:
+                # TSE Japan — use Yahoo Finance chart API same as NSE
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1mo&range=1y"
+                r = requests.get(url, headers=headers, timeout=15)
+                data = r.json()
+                closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+                closes = [c for c in closes if c is not None]
+                if len(closes) >= 2:
+                    trends.append(closes[-12:])
+                    high52 = max(closes)
+                    current = closes[-1]
+                    pct_froms.append(round(((current - high52) / high52) * 100, 1))
 
         except Exception as e:
-            logger.warning(f"Alpha Vantage error for {ticker}: {e}")
+            logger.warning(f"Price fetch error for {ticker}: {e}")
 
     def normalize_trend(series):
         mn, mx = min(series), max(series)
@@ -93,7 +129,6 @@ def fetch_price_data(tickers: list[str]) -> dict:
         "pct_from_52w_high": round(float(np.mean(pct_froms)), 1) if pct_froms else None,
         "price_trend": avg_trend or [50] * 12,
     }
-
 # ─────────────────────────────────────────────
 # 2. NEWS SENTIMENT  (Yahoo RSS + VADER)
 # ─────────────────────────────────────────────
