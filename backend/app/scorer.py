@@ -26,39 +26,54 @@ YAHOO_NEWS_SEARCH = "https://news.yahoo.com/rss/search?p={query}"
 # ─────────────────────────────────────────────
 
 def fetch_price_data(tickers: list[str]) -> dict:
+    import os, requests
+
+    api_key = os.getenv("ALPHA_VANTAGE_KEY", "demo")
     pe_ratios, pct_froms, trends = [], [], []
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-
-    for ticker in tickers:
+    for ticker in tickers[:2]:  # limit to 2 to stay within free tier
         try:
-            # Use yfinance with a session and longer timeout
-            import requests
-            session = requests.Session()
-            session.headers.update(headers)
+            # Monthly adjusted prices
+            url = (
+                f"https://www.alphavantage.co/query"
+                f"?function=TIME_SERIES_MONTHLY_ADJUSTED"
+                f"&symbol={ticker}&apikey={api_key}"
+            )
+            r = requests.get(url, timeout=15)
+            data = r.json()
 
-            t = yf.Ticker(ticker, session=session)
-            hist = t.history(period="1y", interval="1mo", timeout=15)
+            monthly = data.get("Monthly Adjusted Time Series", {})
+            if not monthly:
+                continue
 
-            if not hist.empty and len(hist) >= 3:
-                closes = hist["Close"].dropna().tolist()
-                if len(closes) >= 2:
-                    trends.append(closes[-12:])
-                    high52 = max(closes)
-                    current = closes[-1]
-                    pct_from = round(((current - high52) / high52) * 100, 1)
-                    pct_froms.append(pct_from)
+            # Get last 12 months sorted oldest → newest
+            sorted_dates = sorted(monthly.keys())[-12:]
+            closes = [float(monthly[d]["5. adjusted close"]) for d in sorted_dates]
 
-                    # Estimate PE from price (fallback)
-                    info = t.fast_info
-                    pe = getattr(info, 'p_e_ratio', None)
-                    if pe and 0 < float(pe) < 200:
-                        pe_ratios.append(float(pe))
+            if len(closes) >= 2:
+                trends.append(closes)
+                high52 = max(closes)
+                current = closes[-1]
+                pct_from = round(((current - high52) / high52) * 100, 1)
+                pct_froms.append(pct_from)
+
+            # Overview for PE ratio
+            overview_url = (
+                f"https://www.alphavantage.co/query"
+                f"?function=OVERVIEW&symbol={ticker}&apikey={api_key}"
+            )
+            ov = requests.get(overview_url, timeout=15).json()
+            pe = ov.get("TrailingPE") or ov.get("ForwardPE")
+            if pe:
+                try:
+                    pe_f = float(pe)
+                    if 0 < pe_f < 200:
+                        pe_ratios.append(pe_f)
+                except:
+                    pass
 
         except Exception as e:
-            logger.warning(f"yfinance error for {ticker}: {e}")
+            logger.warning(f"Alpha Vantage error for {ticker}: {e}")
 
     def normalize_trend(series):
         mn, mx = min(series), max(series)
