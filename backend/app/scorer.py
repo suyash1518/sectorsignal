@@ -209,34 +209,34 @@ def fetch_macro_score(macro_rule: str, region: str) -> float:
 # ── ML prediction ─────────────────────────────────────────
 
 def predict_with_model(features: dict, sentiment: float, macro: float) -> dict:
-    """
-    Use the trained XGBoost model to predict BUY probability.
-    Falls back to formula if model not loaded.
-    """
     bundle = load_model()
 
-    feature_vector = [
-        features.get("pct_from_52w_high") or 0,
-        features.get("momentum_1m")       or 0,
-        features.get("momentum_3m")       or 0,
-        features.get("momentum_6m")       or 0,
-        features.get("volatility")        or 0,
-        features.get("mean_reversion")    or 0,
-    ]
+    # Base features
+    pct   = features.get("pct_from_52w_high") or 0
+    mom1  = features.get("momentum_1m")       or 0
+    mom3  = features.get("momentum_3m")       or 0
+    mom6  = features.get("momentum_6m")       or 0
+    vol   = features.get("volatility")        or 0
+    mr    = features.get("mean_reversion")    or 0
+
+    # Engineered features (must match 2_train_model.py exactly)
+    mom_accel    = mom1 - mom3 / 3
+    vol_adj_mom  = mom3 / (vol + 1)
+    discount_score = abs(min(pct, 0))
+
+    feature_vector = [pct, mom1, mom3, mom6, vol, mr,
+                      mom_accel, vol_adj_mom, discount_score]
 
     if bundle is not None:
         model   = bundle["model"]
         scaler  = bundle["scaler"]
-        buy_thr = bundle.get("buy_threshold",   0.55)
-        wat_thr = bundle.get("watch_threshold", 0.40)
+        buy_thr = bundle.get("buy_threshold",   0.45)
+        wat_thr = bundle.get("watch_threshold", 0.30)
 
-        X = np.array(feature_vector).reshape(1, -1)
+        X        = np.array(feature_vector).reshape(1, -1)
         X_scaled = scaler.transform(X)
         buy_prob = float(model.predict_proba(X_scaled)[0][1])
 
-        # Blend model probability with live sentiment + macro
-        # (model was trained on price features only;
-        #  sentiment/macro are live signals not in training data)
         blended_score = (buy_prob * 100 * 0.55) + (sentiment * 0.25) + (macro * 0.20)
         blended_score = round(min(99, max(1, blended_score)), 1)
 
@@ -248,23 +248,15 @@ def predict_with_model(features: dict, sentiment: float, macro: float) -> dict:
             signal = "AVOID"
 
         return {
-            "score":    blended_score,
-            "signal":   signal,
-            "buy_prob": round(buy_prob, 3),
+            "score":      blended_score,
+            "signal":     signal,
+            "buy_prob":   round(buy_prob, 3),
             "model_used": bundle["model_name"],
         }
-
     else:
-        # Fallback formula (no model file)
-        pct   = features.get("pct_from_52w_high") or 0
-        mom3  = features.get("momentum_3m")       or 0
-        disc  = max(10, min(90, 20 + abs(min(pct, 0)) * 1.75))
-        mom_s = max(10, min(90, 50 + mom3 * 1.5))
-        score = disc * 0.40 + mom_s * 0.10 + sentiment * 0.25 + macro * 0.25
-        score = round(min(99, max(1, score)), 1)
+        score  = round(min(99, max(1, pct * -1 + sentiment * 0.5 + macro * 0.5)), 1)
         signal = "BUY" if score >= 68 else ("WATCH" if score >= 50 else "AVOID")
         return {"score": score, "signal": signal, "buy_prob": None, "model_used": "formula"}
-
 
 # ── Main entry point ──────────────────────────────────────
 
