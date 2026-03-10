@@ -1,0 +1,7 @@
+SectorSignal — Model Results
+========================================
+Model    : GradientBoosting
+Accuracy : 66.7%
+ROC-AUC  : 0.522
+Features : pct_from_52w_high, momentum_1m, momentum_3m, momentum_6m, volatility, mean_reversion, mom_accel, vol_adj_mom, discount_score
+Fix      : class_weight=balanced (AVOID:BUY = 3:1)
